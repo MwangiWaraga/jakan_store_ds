@@ -1,13 +1,11 @@
 # oraimo_scraper.py
 # Scrape collection pages on https://ke.oraimo.com and append snapshots to Google Sheets.
+# Prices are kept AS-IS (e.g., "KES 2,700"); no numeric cleaning.
 
 import os
-import re
 import time
-import json
 import random
 import logging
-from dataclasses import dataclass
 from typing import List, Dict, Optional
 from urllib.parse import urljoin, urlparse, parse_qs
 
@@ -42,7 +40,6 @@ USER_AGENT = (
     "Mozilla/5.0 (compatible; PriceTracker/1.0; +learning-project) "
     "PythonRequests"
 )
-
 HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml",
@@ -50,7 +47,7 @@ HEADERS = {
     "Connection": "close",
 }
 
-# Nairobi timestamp (zoneinfo if available; fallback to UTC)
+# Nairobi timestamp (zoneinfo if available; fallback to UTC+3)
 try:
     from zoneinfo import ZoneInfo  # Py3.9+
     NAIR_OBS = ZoneInfo("Africa/Nairobi")
@@ -79,25 +76,12 @@ CURRENCY = "KES"
 
 # ───────────────────────── UTILS ─────────────────────────
 def ts_now_iso() -> str:
+    # YYYY-MM-DD HH:MM:SS (Nairobi)
     from datetime import datetime
-    return datetime.now(NAIR_OBS).replace(microsecond=0).isoformat()
+    return datetime.now(NAIR_OBS).strftime("%Y-%m-%d %H:%M:%S")
 
 def sleep_politely():
     time.sleep(random.uniform(*REQUEST_DELAY_RANGE))
-
-def clean_price_to_number(text: str) -> Optional[int]:
-    """Turn 'KES 2,700' -> 2700; returns None if no digits."""
-    if not text:
-        return None
-    digits = re.sub(r"[^\d.]", "", text)
-    if not digits:
-        return None
-    # Prices appear as integers; if decimal shows up, round.
-    try:
-        val = float(digits)
-        return int(round(val))
-    except Exception:
-        return None
 
 def absolute_url(href: str) -> str:
     if not href:
@@ -107,7 +91,6 @@ def absolute_url(href: str) -> str:
 def extract_slug(product_url: str) -> str:
     try:
         path = urlparse(product_url).path  # /product/<slug>
-        # keep entire slug segment (can contain dashes)
         if "/product/" in path:
             return path.split("/product/", 1)[1].strip("/").split("/")[0]
         return path.strip("/")
@@ -124,23 +107,24 @@ def extract_ean_from_url(href: str) -> Optional[str]:
         pass
     return None
 
-def text_or_attr(elem, attr_name: str, default="") -> str:
-    if not elem:
-        return default
-    val = elem.get(attr_name)
-    if val:
-        return val.strip()
-    # fallback to text
-    return (elem.get_text(strip=True) or default)
+def first_text(root, selectors) -> str:
+    """Return text for the first selector that matches with non-empty text (stripped)."""
+    for sel in selectors:
+        el = root.select_one(sel)
+        if el:
+            txt = el.get_text(strip=True)
+            if txt:
+                return txt
+    return ""
 
 def fetch(url: str) -> Optional[str]:
     """GET with retries + polite delay."""
     for attempt in range(1, RETRY_COUNT + 1):
         try:
             resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 200 and "text/html" in resp.headers.get("Content-Type", ""):
+            ctype = resp.headers.get("Content-Type", "")
+            if resp.status_code == 200 and "text/html" in ctype:
                 return resp.text
-            # 404 or non-HTML: break
             logging.warning(f"[{resp.status_code}] Non-HTML or error for {url}")
             if 400 <= resp.status_code < 500:
                 return None
@@ -168,16 +152,19 @@ def parse_tile(div) -> Optional[Dict]:
         title = a.get("data-name") or a.get_text(strip=True)
 
         # model (SKU)
-        model = a.get("data-sku", "").strip() or ""
+        model = (a.get("data-sku") or "").strip()
 
         # EAN from URL query
         ean = extract_ean_from_url(href) or ""
 
-        # main image
+        # main image (handle lazy-load src/data-src/srcset)
         img = div.select_one(".product-picture-wrap img")
         main_img = ""
         if img:
             main_img = img.get("src") or img.get("data-src") or ""
+            if not main_img and img.get("srcset"):
+                # take the first candidate from srcset
+                main_img = img.get("srcset").split(",")[0].split()[0]
             main_img = absolute_url(main_img)
 
         # short description: join the "feature points"
@@ -190,11 +177,25 @@ def parse_tile(div) -> Optional[Dict]:
                     short_points.append(txt)
         short_desc = ", ".join(short_points)
 
-        # prices
-        price_now_el = div.select_one("div.product-price > span")
-        price_was_el = div.select_one("div.product-price > del")
-        price_now = clean_price_to_number(price_now_el.get_text() if price_now_el else "")
-        price_was = clean_price_to_number(price_was_el.get_text() if price_was_el else "")
+        # prices (keep AS-IS; robust selectors + fallback to data-price)
+        price_now_txt = first_text(div, [
+            ".product-desc .product-price span",
+            "p.product-price span",
+            ".product-price span",
+        ])
+        price_was_txt = first_text(div, [
+            ".product-desc .product-price del",
+            "p.product-price del",
+            ".product-price del",
+        ])
+
+        if not price_now_txt:
+            # fallback: sometimes price may be in data attributes
+            price_now_txt = a.get("data-price") or ""
+            if not price_now_txt:
+                btn = div.select_one("a.js_add_to_cart")
+                if btn:
+                    price_now_txt = btn.get("data-price") or ""
 
         # stock status
         tile_text = div.get_text(" ", strip=True).lower()
@@ -209,8 +210,8 @@ def parse_tile(div) -> Optional[Dict]:
             "product_url": product_url,
             "title": title,
             "short_description": short_desc,
-            "price_now": price_now if price_now is not None else "",
-            "price_was": price_was if price_was is not None else "",
+            "price_now": price_now_txt or "",
+            "price_was": price_was_txt or "",
             "currency": CURRENCY,
             "main_image_url": main_img,
             "ean": ean,
@@ -298,8 +299,6 @@ def scrape_category(slug: str) -> List[Dict]:
         seen_urls.update(x["product_url"] for x in new_items)
 
         sleep_politely()
-
-        # Heuristic: if this page had fewer items than earlier pages, may be last page.
         if len(new_items) == 0:
             break
 
