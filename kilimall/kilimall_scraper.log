@@ -1,0 +1,32 @@
+2025-08-31 13:38:48,841 [INFO] ============================================================
+2025-08-31 13:39:32,557 [INFO] ============================================================
+2025-08-31 13:39:32,557 [INFO] STARTING Kilimall Scraper (Optimized Version)
+2025-08-31 13:39:32,558 [INFO] Target Sheet: 18QRcbrEq2T-iaNQICu535J2u_cPFzQxCY-GRcDMt49o -> kilimall_products
+2025-08-31 13:39:32,558 [INFO] Stores to scrape: 1
+2025-08-31 13:39:36,482 [INFO] Google Sheets connection established
+2025-08-31 13:39:36,483 [INFO] 
+Processing store 1/1: JAKAN PHONE STORE
+2025-08-31 13:39:36,483 [INFO] [JAKAN PHONE STORE] Starting optimized scrape
+2025-08-31 13:39:36,484 [INFO] [JAKAN PHONE STORE] Strategy: pageNo
+2025-08-31 13:39:52,180 [INFO] [JAKAN PHONE STORE] Strategy pageNo: +59 unique products
+2025-08-31 13:39:53,644 [INFO] [JAKAN PHONE STORE] Strategy: price_desc
+2025-08-31 13:39:59,093 [INFO] [JAKAN PHONE STORE] Strategy price_desc: +0 unique products
+2025-08-31 13:40:00,234 [INFO] [JAKAN PHONE STORE] Strategy: sales
+2025-08-31 13:40:05,429 [INFO] [JAKAN PHONE STORE] Strategy sales: +3 unique products
+2025-08-31 13:40:07,447 [INFO] [JAKAN PHONE STORE] Strategy: pageNum
+2025-08-31 13:40:16,339 [INFO] [JAKAN PHONE STORE] Strategy pageNum: +7 unique products
+2025-08-31 13:40:17,655 [INFO] [JAKAN PHONE STORE] Strategy: offset
+2025-08-31 13:40:22,930 [INFO] [JAKAN PHONE STORE] Strategy offset: +0 unique products
+2025-08-31 13:40:24,581 [INFO] [JAKAN PHONE STORE] TOTAL UNIQUE PRODUCTS: 69
+2025-08-31 13:40:24,582 [INFO] SUCCESS JAKAN PHONE STORE: 69 products found
+2025-08-31 13:40:24,582 [INFO] 
+Uploading 69 products to Google Sheets...
+2025-08-31 13:40:25,090 [INFO] Upload completed successfully
+2025-08-31 13:40:25,091 [INFO] 
+============================================================
+2025-08-31 13:40:25,091 [INFO] PERFORMANCE SUMMARY
+2025-08-31 13:40:25,092 [INFO] Execution time: 52.5 seconds
+2025-08-31 13:40:25,092 [INFO] Total products: 69
+2025-08-31 13:40:25,092 [INFO] Efficiency: ~18 requests per store
+2025-08-31 13:40:25,093 [INFO] Average: 69.0 products per store
+2025-08-31 13:40:25,093 [INFO] Scraping completed successfully!
