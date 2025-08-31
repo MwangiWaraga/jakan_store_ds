@@ -30,3 +30,34 @@ Uploading 69 products to Google Sheets...
 2025-08-31 13:40:25,092 [INFO] Efficiency: ~18 requests per store
 2025-08-31 13:40:25,093 [INFO] Average: 69.0 products per store
 2025-08-31 13:40:25,093 [INFO] Scraping completed successfully!
+2025-08-31 13:47:08,055 [INFO] ============================================================
+2025-08-31 13:47:08,056 [INFO] STARTING Kilimall Scraper (Optimized Version)
+2025-08-31 13:47:08,056 [INFO] Target Sheet: 18QRcbrEq2T-iaNQICu535J2u_cPFzQxCY-GRcDMt49o -> kilimall_products
+2025-08-31 13:47:08,056 [INFO] Stores to scrape: 1
+2025-08-31 13:47:11,878 [INFO] Google Sheets connection established
+2025-08-31 13:47:11,879 [INFO] 
+Processing store 1/1: JAKAN PHONE STORE
+2025-08-31 13:47:11,879 [INFO] [JAKAN PHONE STORE] Starting optimized scrape
+2025-08-31 13:47:11,879 [INFO] [JAKAN PHONE STORE] Strategy: pageNo
+2025-08-31 13:47:23,456 [INFO] [JAKAN PHONE STORE] Strategy pageNo: +46 unique products
+2025-08-31 13:47:25,025 [INFO] [JAKAN PHONE STORE] Strategy: price_desc
+2025-08-31 13:47:29,644 [INFO] [JAKAN PHONE STORE] Strategy price_desc: +7 unique products
+2025-08-31 13:47:31,607 [INFO] [JAKAN PHONE STORE] Strategy: sales
+2025-08-31 13:47:36,770 [INFO] [JAKAN PHONE STORE] Strategy sales: +0 unique products
+2025-08-31 13:47:39,142 [INFO] [JAKAN PHONE STORE] Strategy: pageNum
+2025-08-31 13:47:44,454 [INFO] [JAKAN PHONE STORE] Strategy pageNum: +13 unique products
+2025-08-31 13:47:46,310 [INFO] [JAKAN PHONE STORE] Strategy: offset
+2025-08-31 13:47:51,329 [INFO] [JAKAN PHONE STORE] Strategy offset: +0 unique products
+2025-08-31 13:47:53,519 [INFO] [JAKAN PHONE STORE] TOTAL UNIQUE PRODUCTS: 66
+2025-08-31 13:47:53,520 [INFO] SUCCESS JAKAN PHONE STORE: 66 products found
+2025-08-31 13:47:53,521 [INFO] 
+Uploading 66 products to Google Sheets...
+2025-08-31 13:47:54,550 [INFO] Upload completed successfully
+2025-08-31 13:47:54,552 [INFO] 
+============================================================
+2025-08-31 13:47:54,552 [INFO] PERFORMANCE SUMMARY
+2025-08-31 13:47:54,553 [INFO] Execution time: 46.5 seconds
+2025-08-31 13:47:54,553 [INFO] Total products: 66
+2025-08-31 13:47:54,553 [INFO] Efficiency: ~18 requests per store
+2025-08-31 13:47:54,554 [INFO] Average: 66.0 products per store
+2025-08-31 13:47:54,554 [INFO] Scraping completed successfully!
