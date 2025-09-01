@@ -6,6 +6,7 @@ import os
 import time
 import random
 import logging
+import re
 from typing import List, Dict, Optional
 from urllib.parse import urljoin, urlparse, parse_qs
 
@@ -295,6 +296,43 @@ def ensure_worksheet(sh) -> gspread.Worksheet:
         logging.warning("Sheet header differs from expected; appending rows under existing header.")
     return ws
 
+def get_total_pages(html: str) -> int:
+    """Extract total number of pages from pagination info."""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Look for "Total X Pages" text pattern
+        pagination_text = soup.get_text()
+        if "Total" in pagination_text and "Pages" in pagination_text:
+            import re
+            match = re.search(r'Total\s+(\d+)\s+Pages', pagination_text, re.IGNORECASE)
+            if match:
+                total_pages = int(match.group(1))
+                logging.info(f"Found pagination info: {total_pages} total pages")
+                return total_pages
+        
+        # Fallback: look for pagination numbers in href attributes
+        page_links = soup.find_all('a', href=re.compile(r'page=\d+'))
+        if page_links:
+            page_numbers = []
+            for link in page_links:
+                match = re.search(r'page=(\d+)', link.get('href', ''))
+                if match:
+                    page_numbers.append(int(match.group(1)))
+            if page_numbers:
+                max_page = max(page_numbers)
+                logging.info(f"Found max page number in links: {max_page}")
+                return max_page
+        
+        # Default to 1 if no pagination found
+        logging.info("No pagination found, assuming 1 page")
+        return 1
+        
+    except Exception as e:
+        logging.warning(f"Could not determine total pages: {e}")
+        return 1
+
+
 def append_rows(ws, rows: List[List]):
     if not rows:
         return
@@ -310,8 +348,31 @@ def scrape_category(slug: str) -> List[Dict]:
     """Scrape all pages of a collection and return product dicts."""
     all_items: List[Dict] = []
     seen_urls = set()
-
-    for page in range(1, MAX_PAGES_PER_COLLECTION + 1):
+    
+    # First, get the first page to determine total pages
+    url = f"{BASE_URL}/collections/{slug}?page=1"
+    logging.info(f"Fetching {url}")
+    html = fetch(url)
+    if not html:
+        logging.warning(f"No HTML returned for first page of {slug}")
+        return all_items
+    
+    # Detect total pages from the first page
+    total_pages = get_total_pages(html)
+    max_pages = min(total_pages, MAX_PAGES_PER_COLLECTION)  # Safety cap
+    logging.info(f"Will scrape {max_pages} pages for category '{slug}'")
+    
+    # Process the first page
+    items = parse_collection(html)
+    if items:
+        new_items = [x for x in items if x["product_url"] not in seen_urls]
+        for x in new_items:
+            x["category"] = slug.replace("-", " ").title()
+        all_items.extend(new_items)
+        seen_urls.update(x["product_url"] for x in new_items)
+    
+    # Process remaining pages (if any)
+    for page in range(2, max_pages + 1):
         url = f"{BASE_URL}/collections/{slug}?page={page}"
         logging.info(f"Fetching {url}")
         html = fetch(url)
@@ -334,6 +395,7 @@ def scrape_category(slug: str) -> List[Dict]:
 
         sleep_politely()
         if len(new_items) == 0:
+            logging.info(f"Stopping: no new items on page {page} of {slug}")
             break
 
     return all_items
