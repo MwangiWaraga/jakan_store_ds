@@ -1,0 +1,7 @@
+# Add your required packages below
+requests
+google-auth
+google-api-python-client
+pandas
+bs4
+gspread
