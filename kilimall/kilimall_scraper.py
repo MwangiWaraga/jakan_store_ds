@@ -27,6 +27,8 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ── CONFIGURATION ────────────────────────────────────────────────────────
 
@@ -79,13 +81,22 @@ except (ImportError, Exception):
 CSV_HEADERS = ["timestamp", "store_name", "product_url", "title", "price"]
 
 # ── SHEETS ───────────────────────────────────────────────────────────────
-import gspread
-from google.oauth2.service_account import Credentials
 
 def get_sheets_client():
-    """Get authenticated Google Sheets client"""
-    scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-    creds_path = "C:\\Users\\hp\\Desktop\\Data Science\\creds\\gsheets-user-creds.json"
+    """Get authenticated Google Sheets client (using creds/gsheets-user-creds.json)."""
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    # Always look inside the local creds folder
+    creds_path = os.path.join("creds", "gsheets-user-creds.json")
+
+    if not os.path.exists(creds_path):
+        raise FileNotFoundError(
+            f"Google Sheets credentials file not found at {creds_path}"
+        )
+
     creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
     return gspread.authorize(creds)
 
