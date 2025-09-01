@@ -26,9 +26,43 @@ CATEGORY_SLUGS = [
     "home-appliances",
 ]
 
+# CATEGORY_SLUGS = [
+#     "power-station",
+#     "iphone-accessories",
+#     "wall-chargers",
+#     "car-chargers",
+#     "cables",
+#     "wireless-stereo-earbuds",
+#     "wireless-neckband-headphones",
+#     "wireless-over-ear-headphones",
+#     "open-ear-headphones",
+#     "wireless-speakers",
+#     "wired-earphones",
+#     "smart-watches",
+#     "smart-lighting",
+#     "mouse-keyboards",
+#     "mi-fi",
+#     "smart-plug",
+#     "camera-accessories",
+#     "grooming-series",
+#     "oral-care",
+#     "hair-styling-tools",
+#     "blenders",
+#     "electric-kettles",
+#     "kitchen-appliances",
+#     "humidifiers",
+#     "vacuums",
+#     "light-bulbs",
+#     "irons",
+#     "baby-feeding",
+#     "fans",
+#     "power-banks",
+# ]
+
+
 SHEET_ID = "18QRcbrEq2T-iaNQICu535J2u_cPFzQxCY-GRcDMt49o"     # <-- <<< REQUIRED
 SHEET_TAB = "raw"
-
+ 
 # polite crawling
 REQUEST_TIMEOUT = 20
 RETRY_COUNT = 3
