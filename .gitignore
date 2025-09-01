@@ -20,3 +20,6 @@ Thumbs.db
 # Credentials
 creds/
 *.json
+
+# Personal scripts with paths
+run_scraper.bat

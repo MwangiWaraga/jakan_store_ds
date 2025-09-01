@@ -1,0 +1,27 @@
+@echo off
+REM Oraimo Scraper - Batch Script Template
+REM Copy this file to run_scraper.bat and customize the paths for your system
+
+echo [%date% %time%] Starting Oraimo Scraper...
+
+REM Navigate to your project directory (CUSTOMIZE THIS PATH)
+cd /d "YOUR_PROJECT_PATH_HERE"
+
+REM Activate virtual environment
+call .venv\Scripts\activate.bat
+
+REM Set Google credentials environment variable (CUSTOMIZE THIS PATH)
+set GOOGLE_APPLICATION_CREDENTIALS=YOUR_FULL_PATH_TO_CREDS_JSON
+
+REM Navigate to oraimo folder and run scraper
+cd oraimo
+python oraimo_scraper.py
+
+REM Check if scraper ran successfully
+if %errorlevel% equ 0 (
+    echo [%date% %time%] Scraper completed successfully
+) else (
+    echo [%date% %time%] Scraper failed with error code %errorlevel%
+)
+
+echo [%date% %time%] Script finished
