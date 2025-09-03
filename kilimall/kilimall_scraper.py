@@ -1,6 +1,6 @@
 # kilimall_scraper.py
 # Scrape specific Kilimall stores (using store IDs) and append product snapshots to Google Sheets.
-# Columns written: updated_at, store_name, product_title, product_url, price
+# Columns written: updated_at, store_name, product_title, product_url, listing_id, price
 #
 # Auth: expects GOOGLE_APPLICATION_CREDENTIALS env var pointing to a service account JSON.
 
@@ -20,14 +20,14 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.kilimall.co.ke"
 
-# ✅ Provide name + id pairs here (IDs are numeric; you gave 8958 for Jakan)
+# Provide name + id pairs here (IDs are numeric; e.g., 8958 for Jakan)
 STORES: List[Dict] = [
     {"name": "Jakan Phone Store", "id": 8958},
-    {"name": "Anne", "id": 100003079},
+    # {"name": "Another Store", "id": 1234},
 ]
 
 SHEET_ID = "18QRcbrEq2T-iaNQICu535J2u_cPFzQxCY-GRcDMt49o"
-SHEET_TAB = "kilimall"  # keep your existing tab name
+SHEET_TAB = "kilimall"  # your existing tab name
 
 REQUEST_TIMEOUT = 20
 RETRY_COUNT = 3
@@ -35,7 +35,6 @@ REQUEST_DELAY_RANGE = (0.8, 1.6)
 MAX_PAGES_PER_STORE = 400   # safety cap
 MAX_EMPTY_PAGES = 3         # stop after N consecutive empty pages
 
-# Desktop UA plus a hint that this is an xhr (some backends check this)
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,7 +54,9 @@ except Exception:
     from datetime import timezone, timedelta
     KE_TZ = timezone(timedelta(hours=3))
 
-HEADER_ROW = ["updated_at", "store_name", "product_title", "product_url", "price"]
+# New header with listing_id
+HEADER_ROW = ["updated_at", "store_name", "product_title", "product_url", "listing_id", "price"]
+OLD_HEADER_ROW = ["updated_at", "store_name", "product_title", "product_url", "price"]
 
 
 # ───────────────────────── UTIL ─────────────────────────
@@ -108,9 +109,17 @@ def ensure_worksheet(sh) -> gspread.Worksheet:
         ws = sh.add_worksheet(title=SHEET_TAB, rows=1000, cols=len(HEADER_ROW) + 2)
         ws.append_row(HEADER_ROW, value_input_option="RAW")
         return ws
+
     first = ws.row_values(1)
     if not first:
         ws.append_row(HEADER_ROW, value_input_option="RAW")
+    elif first == OLD_HEADER_ROW:
+        # Auto-upgrade header to include listing_id (keeps old data intact)
+        # ws.update("A1", [HEADER_ROW])
+        ws.update(range_name="A1", values=[HEADER_ROW], value_input_option="RAW")
+        logging.info(f"Upgraded header in '{SHEET_TAB}' to include listing_id.")
+    elif first != HEADER_ROW:
+        logging.warning("Sheet header differs from expected; appending under existing header.")
     return ws
 
 def append_rows(ws, rows: List[List]):
@@ -161,6 +170,12 @@ def canonical_product_url(url: str) -> str:
     netloc = "www.kilimall.co.ke"
     return urlunparse((p.scheme or "https", netloc, p.path.rstrip("/"), "", "", ""))
 
+def extract_listing_id(url: str) -> str:
+    """Grab the numeric id after /listing/, e.g. /listing/1001433571-... -> 1001433571."""
+    path = urlparse(url).path or ""
+    m = re.search(r"/listing/(\d+)", path)
+    return m.group(1) if m else ""
+
 def clean_title(title: str) -> str:
     if not title:
         return ""
@@ -170,7 +185,7 @@ def clean_title(title: str) -> str:
     return title
 
 def parse_product_tiles(html: str) -> List[Dict]:
-    """Parse product anchors and closest 'KSh …' price."""
+    """Parse product anchors and closest 'KSh …' price, plus listing_id."""
     soup = BeautifulSoup(html or "", "html.parser")
     anchors = []
     for sel in A_SELECTORS:
@@ -185,7 +200,7 @@ def parse_product_tiles(html: str) -> List[Dict]:
             continue
         seen_hrefs.add(href)
 
-        product_url = urljoin(BASE_URL, href)
+        full_url = urljoin(BASE_URL, href)
         raw_title = (a.get("title") or a.get_text(" ", strip=True) or "").strip()
         title = clean_title(raw_title)
 
@@ -202,7 +217,12 @@ def parse_product_tiles(html: str) -> List[Dict]:
                 break
             node = node.parent
 
-        out.append({"product_title": title, "product_url": product_url, "price": price})
+        out.append({
+            "product_title": title,
+            "product_url": full_url,
+            "listing_id": extract_listing_id(full_url),
+            "price": price,
+        })
     return out
 
 
@@ -210,10 +230,10 @@ def parse_product_tiles(html: str) -> List[Dict]:
 
 def subpage_candidates(store_id: str, page: int) -> Iterable[str]:
     """
-    FIXED: try both zero-based and one-based indexes for EVERY page.
-    - page==1 → try 0, then 1
-    - page>=2 → try page-1 (zero-based), then page (one-based)
-    We generate multiple param name variants per index.
+    Try both zero-based and one-based indexes for EVERY page.
+    page==1 → try 0, then 1
+    page>=2 → try page-1 (zero-based), then page (one-based)
+    Generate multiple param name variants per index.
     """
     base = f"{BASE_URL}/new/store/sub-page/{store_id}"
 
@@ -232,7 +252,6 @@ def subpage_candidates(store_id: str, page: int) -> Iterable[str]:
             f"{base}?typeName=All+Products&pageNo={idx}",
             f"{base}?pageNum={idx}&typeName=All+Products",
             f"{base}?typeName=All+Products&pageNum={idx}&pageSize=36",
-            # a couple extra sizes in case a store uses different page sizes
             f"{base}?typeName=All+Products&pageNum={idx}&pageSize=32",
             f"{base}?typeName=All+Products&pageNum={idx}&pageSize=48",
         ]
@@ -243,8 +262,8 @@ def subpage_candidates(store_id: str, page: int) -> Iterable[str]:
 
 def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
     """
-    Use the AJAX sub-page endpoint for page 1..N until no new tiles appear
-    (with a small empty-page tolerance). Dedupe across pages by canonical URL.
+    Use the AJAX sub-page endpoint for page 1..N until no new tiles appear.
+    Dedupe across pages by canonical URL; keep listing_id.
     """
     logging.info(f"Store: {store_name} (id={store_id})")
     all_items: List[Dict] = []
@@ -254,7 +273,6 @@ def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
     empty_streak = 0
     while page <= MAX_PAGES_PER_STORE and empty_streak < MAX_EMPTY_PAGES:
         got_new = False
-        chosen_url = None
 
         for url in subpage_candidates(str(store_id), page):
             body = fetch(url)
@@ -263,21 +281,21 @@ def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
             html = decode_html_from_json(body)
             batch = parse_product_tiles(html)
 
-            # Dedupe by canonical path (ignoring query params)
             new = []
             for it in batch:
                 canon = canonical_product_url(it["product_url"])
                 if canon in seen_paths:
                     continue
                 seen_paths.add(canon)
+                # normalize url to canonical form and keep listing_id
+                it["product_url"] = canon
                 new.append(it)
 
             if new:
                 all_items.extend(new)
-                chosen_url = url
                 logging.info(f"page {page}: +{len(new)} (total {len(all_items)}) via {url}")
                 got_new = True
-                break  # go to next page number
+                break  # next page
 
         if not got_new:
             empty_streak += 1
@@ -288,7 +306,6 @@ def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
         page += 1
         sleep_politely()
 
-    # Attach store name
     for it in all_items:
         it["store_name"] = store_name
 
@@ -314,9 +331,9 @@ def run():
 
     logging.info(f"Total rows: {len(everything)}")
 
-    # Prepare rows for Sheets
+    # Prepare rows for Sheets (now includes listing_id)
     rows = [
-        [ts, it["store_name"], it["product_title"], canonical_product_url(it["product_url"]), it["price"]]
+        [ts, it["store_name"], it["product_title"], it["product_url"], it.get("listing_id", ""), it["price"]]
         for it in everything
     ]
 
