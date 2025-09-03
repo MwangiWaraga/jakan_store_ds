@@ -23,7 +23,7 @@ BASE_URL = "https://www.kilimall.co.ke"
 # ✅ Provide name + id pairs here (IDs are numeric; you gave 8958 for Jakan)
 STORES: List[Dict] = [
     {"name": "Jakan Phone Store", "id": 8958},
-    # {"name": "Another Store", "id": 1234},
+    {"name": "Anne", "id": 100003079},
 ]
 
 SHEET_ID = "18QRcbrEq2T-iaNQICu535J2u_cPFzQxCY-GRcDMt49o"
@@ -210,21 +210,36 @@ def parse_product_tiles(html: str) -> List[Dict]:
 
 def subpage_candidates(store_id: str, page: int) -> Iterable[str]:
     """
-    Kilimall sub-page endpoint used by pager / infinite scroll.
-    Try a few param names that different store templates use.
-    For page 1 we also try pageNum=0 (some backends are 0-indexed).
+    FIXED: try both zero-based and one-based indexes for EVERY page.
+    - page==1 → try 0, then 1
+    - page>=2 → try page-1 (zero-based), then page (one-based)
+    We generate multiple param name variants per index.
     """
     base = f"{BASE_URL}/new/store/sub-page/{store_id}"
-    candidates = [
-        f"{base}?typeName=All+Products&pageNum={page}",
-        f"{base}?typeName=All+Products&page={page}",
-        f"{base}?typeName=All+Products&pageNo={page}",
-        f"{base}?pageNum={page}&typeName=All+Products",
-        f"{base}?typeName=All+Products&pageNum={page}&pageSize=36",
-    ]
+
     if page == 1:
-        candidates.insert(0, f"{base}?typeName=All+Products&pageNum=0")
-    return candidates
+        idxs = [0, 1]
+    else:
+        idxs = [page - 1, page]
+
+    tried = set()
+    for idx in idxs:
+        if idx < 0:
+            continue
+        variants = [
+            f"{base}?typeName=All+Products&pageNum={idx}",
+            f"{base}?typeName=All+Products&page={idx}",
+            f"{base}?typeName=All+Products&pageNo={idx}",
+            f"{base}?pageNum={idx}&typeName=All+Products",
+            f"{base}?typeName=All+Products&pageNum={idx}&pageSize=36",
+            # a couple extra sizes in case a store uses different page sizes
+            f"{base}?typeName=All+Products&pageNum={idx}&pageSize=32",
+            f"{base}?typeName=All+Products&pageNum={idx}&pageSize=48",
+        ]
+        for url in variants:
+            if url not in tried:
+                tried.add(url)
+                yield url
 
 def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
     """
@@ -239,6 +254,8 @@ def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
     empty_streak = 0
     while page <= MAX_PAGES_PER_STORE and empty_streak < MAX_EMPTY_PAGES:
         got_new = False
+        chosen_url = None
+
         for url in subpage_candidates(str(store_id), page):
             body = fetch(url)
             if not body:
@@ -257,6 +274,7 @@ def scrape_by_store_id(store_name: str, store_id: int) -> List[Dict]:
 
             if new:
                 all_items.extend(new)
+                chosen_url = url
                 logging.info(f"page {page}: +{len(new)} (total {len(all_items)}) via {url}")
                 got_new = True
                 break  # go to next page number
