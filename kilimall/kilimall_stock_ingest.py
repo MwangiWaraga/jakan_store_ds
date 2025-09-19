@@ -66,6 +66,7 @@ BQ_SCHEMA = [
     bigquery.SchemaField("fbk_inventory", "INT64"),
     bigquery.SchemaField("non_fbk_inventory", "INT64"),
     bigquery.SchemaField("status", "STRING"),
+    bigquery.SchemaField("updated_at_ts", "TIMESTAMP"),  # NEW
 ]
 
 NUMERIC_COLS = ["market_reference_price", "selling_price", "fbk_inventory", "non_fbk_inventory"]
@@ -102,6 +103,9 @@ def main():
     for c in NUMERIC_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # NEW: add load timestamp (UTC) for all rows
+    df["updated_at_ts"] = pd.Timestamp.now(tz="UTC")
 
     fq_table = f"{args.project_id}.{args.dataset_id}.{args.table_id}"
     client = bigquery.Client(project=args.project_id)
