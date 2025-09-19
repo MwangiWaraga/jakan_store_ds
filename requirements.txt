@@ -5,3 +5,8 @@ google-api-python-client
 pandas
 bs4
 gspread
+google-cloud-bigquery>=3.25.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+openpyxl>=3.1.0
+pandas-gbq>=0.26.1
