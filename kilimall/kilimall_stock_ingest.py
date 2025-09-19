@@ -18,7 +18,7 @@ Auth:
 # CONFIG — edit these defaults
 # -----------------------------
 PROJECT_ID  = "jakan-group"
-DATASET_ID  = "core"
+DATASET_ID  = "jakan_phone_store"
 TABLE_ID    = "kilimall_products_raw"
 EXCEL_PATH  = r"D:\kilimall\stock.xlsx"
 # -----------------------------
