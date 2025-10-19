@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 # ───────────────────────── BIGQUERY CONFIG ─────────────────────────
 GCP_PROJECT_ID = "jakan-group"          # <-- <<< REQUIRED
 BQ_DATASET     = "jakan_phone_store"    # will be created if missing
-BQ_TABLE       = "raw_snapshots"        # will be created if missing
+BQ_TABLE       = "oraimo_products_raw"        # will be created if missing
 BQ_LOCATION    = "europe-west1"         # match your dataset region
 
 # ───────────────────────── SCRAPER CONFIG ─────────────────────────
