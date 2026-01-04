@@ -14,8 +14,8 @@ from google.api_core.exceptions import NotFound, Conflict
 
 # ───────────────────────── BIGQUERY CONFIG ─────────────────────────
 GCP_PROJECT_ID = "jakan-group"          # <-- <<< REQUIRED
-BQ_DATASET     = "jakan_phone_store"    # will be created if missing
-BQ_TABLE       = "oraimo_products_raw"        # will be created if missing
+BQ_DATASET     = "core"    # will be created if missing
+BQ_TABLE       = "oraimo_products_raw_bqt"        # will be created if missing
 BQ_LOCATION    = "europe-west1"         # match your dataset region
 
 # ───────────────────────── SCRAPER CONFIG ─────────────────────────
