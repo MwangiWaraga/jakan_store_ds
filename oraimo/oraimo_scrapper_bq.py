@@ -1,7 +1,3 @@
-# oraimo_scraper_bq.py
-# Scrape collection pages on https://ke.oraimo.com and append snapshots to BigQuery.
-# 'ts' is the scraping TIMESTAMP (stored in BQ as TIMESTAMP), all other fields STRING.
-
 import os
 import time
 import random
@@ -9,9 +5,12 @@ import logging
 import re
 from typing import List, Dict, Optional
 from urllib.parse import urljoin, urlparse, parse_qs
+from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
+from google.cloud import bigquery
+from google.api_core.exceptions import NotFound, Conflict
 
 # ───────────────────────── BIGQUERY CONFIG ─────────────────────────
 GCP_PROJECT_ID = "jakan-group"          # <-- <<< REQUIRED
@@ -45,40 +44,21 @@ HEADERS = {
     "Connection": "close",
 }
 
-# Nairobi timestamp (zoneinfo if available; fallback to UTC+3)
+# Nairobi timestamp setup
 try:
-    from zoneinfo import ZoneInfo  # Py3.9+
+    from zoneinfo import ZoneInfo
     NAIR_OBS = ZoneInfo("Africa/Nairobi")
 except Exception:
-    from datetime import timezone, timedelta
-    NAIR_OBS = timezone(timedelta(hours=3))
-
-HEADER = [
-    "ts",
-    "category",
-    "product_url",
-    "title",
-    "short_description",
-    "price_now",
-    "price_was",
-    "currency",
-    "main_image_url",
-    "ean",
-    "model",
-    "stock_status",
-    "slug",
-]
+    from datetime import timezone as dt_timezone, timedelta
+    NAIR_OBS = dt_timezone(timedelta(hours=3))
 
 CURRENCY = "KES"
 
 # ───────────────────────── UTILS ─────────────────────────
-from datetime import datetime, timezone
-
-def ts_now_rfc3339z() -> str:
-    """Return current Nairobi time converted to UTC and formatted RFC3339 with 'Z'."""
-    dt_utc = datetime.now(NAIR_OBS).astimezone(timezone.utc)
-    # Explicit Z-suffix to avoid +00:00 in the string.
-    return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+def ts_now_utc_fmt() -> str:
+    """Return current UTC time formatted as 'YYYY-MM-DD HH:MM:SS'."""
+    # We grab UTC directly, no need to convert from Nairobi first
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def sleep_politely():
     time.sleep(random.uniform(*REQUEST_DELAY_RANGE))
@@ -90,7 +70,7 @@ def absolute_url(href: str) -> str:
 
 def extract_slug(product_url: str) -> str:
     try:
-        path = urlparse(product_url).path  # /product/<slug>
+        path = urlparse(product_url).path
         if "/product/" in path:
             return path.split("/product/", 1)[1].strip("/").split("/")[0]
         return path.strip("/")
@@ -131,7 +111,8 @@ def fetch(url: str) -> Optional[str]:
         sleep_politely()
     return None
 
-# ───────────────────── PARSING (COLLECTION) ─────────────────────
+# ───────────────────── PARSING ─────────────────────
+
 def parse_tile(div) -> Optional[Dict]:
     try:
         a = div.select_one('a[href^="/product/"]')
@@ -239,7 +220,10 @@ def get_total_pages(html: str) -> int:
         logging.warning(f"Could not determine total pages: {e}")
         return 1
 
+# ───────────────────────── LOGIC ─────────────────────────
+
 def scrape_category(slug: str) -> List[Dict]:
+    """Scrapes all pages for a specific category slug."""
     all_items: List[Dict] = []
     seen_urls = set()
 
@@ -254,6 +238,7 @@ def scrape_category(slug: str) -> List[Dict]:
     max_pages = min(total_pages, MAX_PAGES_PER_COLLECTION)
     logging.info(f"Will scrape {max_pages} pages for category '{slug}'")
 
+    # Page 1
     items = parse_collection(html)
     if items:
         new_items = [x for x in items if x["product_url"] not in seen_urls]
@@ -262,6 +247,7 @@ def scrape_category(slug: str) -> List[Dict]:
         all_items.extend(new_items)
         seen_urls.update(x["product_url"] for x in new_items)
 
+    # Subsequent pages
     for page in range(2, max_pages + 1):
         url = f"{BASE_URL}/collections/{slug}?page={page}"
         logging.info(f"Fetching {url}")
@@ -289,8 +275,6 @@ def scrape_category(slug: str) -> List[Dict]:
     return all_items
 
 # ───────────────────────── BIGQUERY ─────────────────────────
-from google.cloud import bigquery
-from google.api_core.exceptions import NotFound, Conflict
 
 def get_bq_client() -> bigquery.Client:
     return bigquery.Client(project=GCP_PROJECT_ID, location=BQ_LOCATION)
@@ -356,62 +340,25 @@ def bq_append_rows(client: bigquery.Client, dataset_id: str, table_id: str, rows
 def run():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     t0 = time.time()
-    ts_str = ts_now_rfc3339z()  # JSON-serializable; BigQuery parses into TIMESTAMP
+    
+    # NEW: Uses the simple YYYY-MM-DD HH:MM:SS format (UTC)
+    ts_str = ts_now_utc_fmt()  
 
     everything: List[Dict] = []
+
+    # Clean loop using the helper function
     for slug in CATEGORY_SLUGS:
-        # fetch first page to announce pagination & scrape all pages
-        url = f"{BASE_URL}/collections/{slug}?page=1"
-        logging.info(f"Fetching {url}")
-        html = fetch(url)
-        if not html:
-            logging.warning(f"No HTML returned for first page of {slug}")
-            continue
-
-        total_pages = get_total_pages(html)
-        max_pages = min(total_pages, MAX_PAGES_PER_COLLECTION)
-        logging.info(f"Will scrape {max_pages} pages for category '{slug}'")
-
-        # add items from page 1
-        items_page1 = parse_collection(html)
-        seen_urls = set()
-        if items_page1:
-            new_items = [x for x in items_page1 if x["product_url"] not in seen_urls]
-            for x in new_items:
-                x["category"] = slug.replace("-", " ").title()
-            everything.extend(new_items)
-            seen_urls.update(x["product_url"] for x in new_items)
-
-        # remaining pages
-        for page in range(2, max_pages + 1):
-            url = f"{BASE_URL}/collections/{slug}?page={page}"
-            logging.info(f"Fetching {url}")
-            html = fetch(url)
-            if not html:
-                logging.info(f"Stopping: no HTML for page {page} of {slug}")
-                break
-            items = parse_collection(html)
-            if not items:
-                logging.info(f"Stopping: zero tiles on page {page} of {slug}")
-                break
-            new_items = [x for x in items if x["product_url"] not in seen_urls]
-            for x in new_items:
-                x["category"] = slug.replace("-", " ").title()
-            everything.extend(new_items)
-            seen_urls.update(x["product_url"] for x in new_items)
-            sleep_politely()
-            if len(new_items) == 0:
-                logging.info(f"Stopping: no new items on page {page} of {slug}")
-                break
-
-        logging.info(f"{slug}: {len([x for x in everything if x.get('category') == slug.replace('-', ' ').title()])} items")
+        items = scrape_category(slug)
+        logging.info(f"{slug}: {len(items)} items")
+        everything.extend(items)
 
     logging.info(f"Total products scraped: {len(everything)}")
 
+    # Prepare rows for BigQuery
     rows: List[Dict] = []
     for it in everything:
         rows.append({
-            "ts": ts_str,  # RFC3339 string -> TIMESTAMP in BQ
+            "ts": ts_str,
             "category": it.get("category", ""),
             "product_url": it.get("product_url", ""),
             "title": it.get("title", ""),
@@ -426,10 +373,14 @@ def run():
             "slug": it.get("slug", ""),
         })
 
-    client = get_bq_client()
-    inserted = bq_append_rows(client, BQ_DATASET, BQ_TABLE, rows)
+    # Upload to BigQuery
+    if rows:
+        client = get_bq_client()
+        inserted = bq_append_rows(client, BQ_DATASET, BQ_TABLE, rows)
+        logging.info(f"Appended {inserted} rows to {client.project}.{BQ_DATASET}.{BQ_TABLE}.")
+    else:
+        logging.warning("No rows collected, skipping BQ upload.")
 
-    logging.info(f"Appended {inserted} rows to {client.project}.{BQ_DATASET}.{BQ_TABLE}.")
     logging.info(f"Done in {round(time.time()-t0, 1)}s")
 
 if __name__ == "__main__":

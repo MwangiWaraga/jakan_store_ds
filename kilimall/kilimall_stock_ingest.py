@@ -20,7 +20,7 @@ Auth:
 PROJECT_ID  = "jakan-group"
 DATASET_ID  = "jakan_phone_store"
 TABLE_ID    = "kilimall_products_raw"
-EXCEL_PATH  = r"C:\Users\Jack Admin\Documents\stock.xlsx"
+EXCEL_PATH  = r"data/stock.xlsx"
 # -----------------------------
 
 import argparse
