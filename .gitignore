@@ -23,3 +23,6 @@ creds/
 
 # Personal scripts with paths
 run_scraper.bat
+
+# Senstive Data
+data/
