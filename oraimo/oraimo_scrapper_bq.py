@@ -26,6 +26,9 @@ CATEGORY_SLUGS = [
     "smart-office",
     "personal-care",
     "home-appliances",
+    "oraimo-home",
+    "oraimo-baby"
+
 ]
 
 REQUEST_TIMEOUT = 20
