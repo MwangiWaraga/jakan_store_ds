@@ -59,7 +59,7 @@ def run_pipeline():
             df = df.iloc[:, :len(EXCEL_COLUMNS_MAP)]
 
         df.columns = EXCEL_COLUMNS_MAP
-        df['shop_name'] = 'Jakan Phone Store' 
+        df['shop_name'] = 'JAKAN PHONE STORE'  # Add static shop name
 
         # --- FIX FOR "nan" TEXT ---
         # Instead of astype(str), we use this safe conversion for string columns
@@ -97,7 +97,7 @@ def run_pipeline():
         job = client.load_table_from_dataframe(df, table_ref, job_config=job_config)
         job.result() 
         
-        print(f"✅ Success! Table {TABLE_NAME} replaced (Clean NULLs, No Partition).")
+        print(f"✅ Success! Table {TABLE_NAME} replaced.")
 
     except GoogleAPIError as e:
         print(f"❌ Cloud Error: {e}")

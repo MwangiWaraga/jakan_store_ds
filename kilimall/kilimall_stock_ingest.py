@@ -106,6 +106,7 @@ def main():
 
     # NEW: add load timestamp (UTC) for all rows
     df["updated_at_ts"] = pd.Timestamp.now(tz="UTC")
+    df['shop_name'] = 'JAKAN PHONE STORE'  # Add static shop name   
 
     fq_table = f"{args.project_id}.{args.dataset_id}.{args.table_id}"
     client = bigquery.Client(project=args.project_id)
