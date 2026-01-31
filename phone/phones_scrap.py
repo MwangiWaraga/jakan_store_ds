@@ -9,7 +9,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from google.cloud import bigquery
-from google.api_core.exceptions import NotFound, Conflict
+from google.api_core.exceptions import NotFound
 
 # ───────────────────────── BIGQUERY CONFIG ─────────────────────────
 GCP_PROJECT_ID = "jakan-group"
@@ -23,12 +23,16 @@ BRAND_CATEGORY_URLS: Dict[str, str] = {
     "tecno": "https://www.phoneplacekenya.com/product-category/smartphones/tecno-phones/",
     "itel": "https://www.phoneplacekenya.com/product-category/smartphones/itel/",
 }
-# Easy to add more:
+# Add more easily:
 # BRAND_CATEGORY_URLS["samsung"] = "https://www.phoneplacekenya.com/product-category/smartphones/samsung/"
 
 PLAYWRIGHT_HEADLESS = True
 DELAY_RANGE = (0.7, 1.4)
 MAX_PAGES_PER_BRAND = 120
+
+# Extra safety: if category scraping ever leaks items again, this filters them out
+# (cheap, because you’re fetching the product page anyway).
+FILTER_BY_BREADCRUMB = True
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -60,6 +64,39 @@ def strip_query(url: str) -> str:
         return p._replace(query="", fragment="").geturl()
     except Exception:
         return url
+
+
+def price_text_clean(price_el) -> str:
+    """
+    Returns clean visible price string:
+    - Range: "KSh 13,500 - KSh 17,000"
+    - Sale:  "KSh 40,999 -> KSh 38,000"
+    - Single:"KSh 32,999"
+    """
+    if not price_el:
+        return ""
+
+    # remove screen-reader text to avoid "Original price was..."
+    for sr in price_el.select(".screen-reader-text"):
+        sr.decompose()
+
+    del_el = price_el.select_one("del bdi, del .woocommerce-Price-amount")
+    ins_el = price_el.select_one("ins bdi, ins .woocommerce-Price-amount")
+    if del_el and ins_el:
+        return f"{clean_text(del_el.get_text(' ', strip=True))} -> {clean_text(ins_el.get_text(' ', strip=True))}"
+
+    bdis = [clean_text(b.get_text(" ", strip=True)) for b in price_el.select("bdi")]
+    bdis = [b for b in bdis if b]
+    uniq = []
+    seen = set()
+    for b in bdis:
+        if b not in seen:
+            uniq.append(b)
+            seen.add(b)
+    if len(uniq) >= 2:
+        return " - ".join(uniq)
+
+    return clean_text(price_el.get_text(" ", strip=True))
 
 
 # ───────────────────────── PLAYWRIGHT FETCHER ─────────────────────────
@@ -96,29 +133,21 @@ class PWFetcher:
         self._page = self._context.new_page()
         self._page.set_default_timeout(25_000)
 
-        # Speed: block heavy assets (safe for HTML parsing)
+        # Speed: block heavy assets (DON'T block stylesheet; that change caused issues on some themes)
         def _route(route, request):
-            if request.resource_type in ("image", "media", "font", "stylesheet"):
+            if request.resource_type in ("image", "media", "font"):
                 return route.abort()
             return route.continue_()
 
         self._page.route("**/*", _route)
 
-    def fetch_html(self, url: str, wait_selector: Optional[str] = None) -> Optional[str]:
+    def fetch_html(self, url: str) -> Optional[str]:
         self._ensure()
         assert self._page is not None
-
         try:
             self._page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-
-            if wait_selector:
-                try:
-                    self._page.wait_for_selector(wait_selector, timeout=20_000)
-                except Exception:
-                    pass
-
-            # tiny settle
-            self._page.wait_for_timeout(300)
+            # small settle; no strict selector wait (prevents 20s timeouts)
+            self._page.wait_for_timeout(250)
             return self._page.content()
         except Exception as ex:
             logging.warning(f"[playwright] failed for {url}: {ex}")
@@ -139,99 +168,137 @@ class PWFetcher:
 
 
 # ───────────────────────── CATEGORY PARSING ─────────────────────────
-def parse_category_page(html: str, base_url: str) -> Tuple[List[str], Optional[str]]:
+def remove_sidebars(root: BeautifulSoup):
     """
-    Returns (product_urls, next_page_url)
-    Robust enough for theme variations.
+    Removes sidebar containers so we don’t capture the "Latest Products" widget.
+    """
+    for bad in root.select("aside, .sidebar, #sidebar, .widget-area, .product_list_widget"):
+        bad.decompose()
+
+
+def find_best_grid_container(root: BeautifulSoup):
+    """
+    Pick the container with the most /product/ links (after sidebars removed).
+    Works across themes.
+    """
+    # common Woo selectors first
+    for sel in ["ul.products", "div.products", "section.products"]:
+        cand = root.select_one(sel)
+        if cand:
+            return cand
+
+    # heuristic: container with max product links
+    best = None
+    best_count = 0
+    for cand in root.select("ul,div,section"):
+        links = cand.select('a[href*="/product/"]')
+        cnt = 0
+        for a in links:
+            href = a.get("href") or ""
+            if "/product/" in href and "add-to-cart" not in href:
+                cnt += 1
+        if cnt > best_count:
+            best_count = cnt
+            best = cand
+
+    return best or root
+
+
+def extract_product_links_and_prices(html: str, category_url: str) -> Tuple[Dict[str, str], Optional[str]]:
+    """
+    Returns:
+      {product_url: price_raw_from_category_tile}, next_page_url
     """
     soup = BeautifulSoup(html, "html.parser")
-    main = soup.select_one("main") or soup
+    root = soup.select_one("main") or soup
 
-    # collect product links
-    loose = []
-    strict = []
+    # remove sidebar widget(s) before extracting
+    remove_sidebars(root)
 
-    for a in main.select('a[href*="/product/"]'):
+    # also avoid header/footer/nav contamination
+    for bad in root.select("header, footer, nav"):
+        bad.decompose()
+
+    grid = find_best_grid_container(root)
+
+    price_map: Dict[str, str] = {}
+
+    # collect urls
+    anchors = grid.select('a[href*="/product/"]')
+    logging.info(f"[debug] raw product-like anchors in grid: {len(anchors)}")
+
+    for a in anchors:
         href = a.get("href")
         if not href:
             continue
-
-        abs_url = strip_query(urljoin(base_url, href))
+        abs_url = strip_query(urljoin(category_url, href))
         path = urlparse(abs_url).path or ""
         if "/product/" not in path:
             continue
         if "add-to-cart" in abs_url:
             continue
-        if a.find_parent(["header", "footer", "nav"]):
-            continue
 
-        loose.append(abs_url)
-
-        # strict heuristic: link appears inside some container with class containing 'product'
-        is_tile = False
+        # find a "tile" around the link that has a price element
+        tile = None
         for parent in a.parents:
-            if getattr(parent, "name", None) in (None,):
-                continue
-            if parent.name in ("main", "body", "html"):
+            if getattr(parent, "name", None) in ("li", "article", "div", "section"):
+                if parent.select_one("span.price, p.price, .price"):
+                    tile = parent
+                    break
+            if getattr(parent, "name", None) in ("main", "body", "html"):
                 break
-            cls = " ".join(parent.get("class", [])).lower() if parent.has_attr("class") else ""
-            if "product-category" in cls:
-                is_tile = False
-                break
-            if "product" in cls:
-                is_tile = True
-                break
-        if is_tile:
-            strict.append(abs_url)
 
-    urls = strict if len(set(strict)) >= 6 else loose
-    urls = sorted(set(urls))
+        price_el = tile.select_one("span.price, p.price, .price") if tile else None
+        price_raw = price_text_clean(price_el)
 
-    # next page link (Woo patterns)
+        if abs_url not in price_map:
+            price_map[abs_url] = price_raw
+
+    # pagination next
     next_url = None
     nxt = soup.select_one("a.next.page-numbers, nav.woocommerce-pagination a.next, a.next")
     if nxt and nxt.get("href"):
-        next_url = urljoin(base_url, nxt["href"])
+        next_url = urljoin(category_url, nxt["href"])
     else:
         rel_next = soup.find("link", attrs={"rel": "next"})
         if rel_next and rel_next.get("href"):
-            next_url = urljoin(base_url, rel_next["href"])
+            next_url = urljoin(category_url, rel_next["href"])
 
-    return urls, next_url
+    return price_map, next_url
 
 
-def scrape_brand_urls(fetcher: PWFetcher, brand: str, start_url: str) -> List[str]:
-    all_urls: List[str] = []
-    seen = set()
-
+def scrape_brand_urls_with_prices(fetcher: PWFetcher, brand: str, start_url: str) -> Dict[str, str]:
     url = start_url
     page = 0
+    out: Dict[str, str] = {}
 
     while url and page < MAX_PAGES_PER_BRAND:
         page += 1
         logging.info(f"[{brand}] category page {page}: {url}")
 
-        html = fetcher.fetch_html(url, wait_selector='a[href*="/product/"]')
+        html = fetcher.fetch_html(url)
         if not html:
             logging.warning(f"[{brand}] no html for {url}")
             break
 
-        urls, next_url = parse_category_page(html, start_url)
-        new_urls = [u for u in urls if u not in seen]
-        for u in new_urls:
-            seen.add(u)
-        all_urls.extend(new_urls)
+        price_map, next_url = extract_product_links_and_prices(html, start_url)
 
-        # stop if we’re not finding anything
-        logging.info(f"[{brand}] page {page}: found {len(urls)} urls, new {len(new_urls)}")
-        if page > 1 and len(urls) == 0:
+        new_count = 0
+        for purl, pprice in price_map.items():
+            if purl not in out:
+                out[purl] = pprice
+                new_count += 1
+
+        logging.info(f"[{brand}] page {page}: found {len(price_map)} urls, new {new_count}")
+
+        if page > 1 and new_count == 0:
             break
 
         url = next_url
         sleep_politely()
 
-    logging.info(f"[{brand}] discovered {len(all_urls)} product urls")
-    return all_urls
+    logging.info(f"[{brand}] discovered {len(out)} product urls")
+    return out
 
 
 # ───────────────────────── PRODUCT PARSING ─────────────────────────
@@ -276,23 +343,24 @@ def detect_in_stock(soup: BeautifulSoup) -> Optional[bool]:
     return None
 
 
-def parse_price_raw(soup: BeautifulSoup) -> str:
-    price_el = soup.select_one("p.price, span.price")
-    return text_or_empty(price_el)
+def parse_description(soup: BeautifulSoup) -> str:
+    desc_panel = soup.select_one("div#tab-description, #tab-description, .woocommerce-Tabs-panel--description")
+    desc = text_or_empty(desc_panel)
+    if desc:
+        return desc
+    short_desc = soup.select_one("div.woocommerce-product-details__short-description")
+    return text_or_empty(short_desc)
 
 
 def extract_variants_json(soup: BeautifulSoup) -> str:
     """
-    Returns a JSON string with:
+    Always returns:
       { "variations": [...], "options": {...} }
-    so it’s always the same shape.
     """
     variations = []
     options = {}
 
     form = soup.select_one("form.variations_form")
-
-    # variations embedded (best case)
     if form and form.get("data-product_variations"):
         raw = form.get("data-product_variations")
         try:
@@ -304,7 +372,6 @@ def extract_variants_json(soup: BeautifulSoup) -> str:
             except Exception:
                 variations = []
 
-    # dropdown options (fallback)
     if form:
         for sel in form.select("select"):
             name = sel.get("name") or sel.get("id") or ""
@@ -320,49 +387,36 @@ def extract_variants_json(soup: BeautifulSoup) -> str:
             if vals:
                 options[name] = vals
 
-    payload = {"variations": variations, "options": options}
-    return json.dumps(payload, ensure_ascii=False)
+    return json.dumps({"variations": variations, "options": options}, ensure_ascii=False)
 
 
-def parse_description(soup: BeautifulSoup) -> str:
-    # full description tab if exists
-    desc_panel = soup.select_one("div#tab-description, #tab-description, .woocommerce-Tabs-panel--description")
-    desc = text_or_empty(desc_panel)
-    if desc:
-        return desc
-    # otherwise short description
-    short_desc = soup.select_one("div.woocommerce-product-details__short-description")
-    return text_or_empty(short_desc)
-
-
-def extract_breadcrumbs_text(soup: BeautifulSoup) -> str:
+def breadcrumb_text(soup: BeautifulSoup) -> str:
     nav = soup.select_one("nav.woocommerce-breadcrumb, .woocommerce-breadcrumb")
     if not nav:
         return ""
     return clean_text(nav.get_text(" ", strip=True))
 
 
-def brand_matches_page(soup: BeautifulSoup, expected_brand: str) -> bool:
-    """
-    Prevent mis-labeling (e.g., Apple adapters showing in infinix category).
-    If breadcrumb contains the expected brand word, we accept.
-    If no breadcrumb found, we accept (don’t over-filter).
-    """
-    crumb = extract_breadcrumbs_text(soup)
-    if not crumb:
-        return True
-    return expected_brand.lower() in crumb.lower()
-
-
-def parse_product(html: str, brand: str, product_url: str) -> Dict:
+def parse_product(html: str, brand: str, product_url: str, category_price_raw: str) -> Optional[Dict]:
     soup = BeautifulSoup(html, "html.parser")
+
+    if FILTER_BY_BREADCRUMB:
+        bc = breadcrumb_text(soup)
+        # If breadcrumbs exist and do NOT mention the brand, skip as cross-sell leakage.
+        if bc and brand.lower() not in bc.lower():
+            return None
 
     name = text_or_empty(soup.select_one("h1.product_title, h1.entry-title, h1"))
     in_stock = detect_in_stock(soup)
-    price_raw = parse_price_raw(soup)
     specs = parse_key_features(soup)
     description = parse_description(soup)
     variants_json = extract_variants_json(soup)
+
+    # price: prefer category tile (range/sale), fallback to product page visible price
+    price_raw = category_price_raw or ""
+    if not price_raw:
+        price_el = soup.select_one("p.price, span.price, .price")
+        price_raw = price_text_clean(price_el)
 
     return {
         "brand": brand,
@@ -411,16 +465,12 @@ def ensure_table(client: bigquery.Client, dataset_id: str, table_id: str) -> big
         logging.info(f"Creating table {table_ref}")
         table = bigquery.Table(table_ref, schema=schema)
         return client.create_table(table, exists_ok=True)
-    except Conflict:
-        return client.get_table(table_ref)
 
 
-def bq_replace_rows(client: bigquery.Client, dataset_id: str, table_id: str, rows: List[Dict]) -> int:
-    """
-    WRITE_TRUNCATE (fresh snapshot).
-    Safe guard: only run if rows > 0.
-    """
+def bq_write_truncate(client: bigquery.Client, dataset_id: str, table_id: str, rows: List[Dict]) -> int:
+    # Guard: don’t wipe last good snapshot if this run failed
     if not rows:
+        logging.warning("0 rows collected -> skipping WRITE_TRUNCATE to avoid wiping previous data.")
         return 0
 
     ensure_dataset(client, dataset_id)
@@ -432,7 +482,6 @@ def bq_replace_rows(client: bigquery.Client, dataset_id: str, table_id: str, row
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         ignore_unknown_values=True,
     )
-
     job = client.load_table_from_json(rows, table_ref, job_config=job_config, location=BQ_LOCATION)
     res = job.result()
     return res.output_rows or len(rows)
@@ -445,30 +494,30 @@ def run():
     fetcher = PWFetcher()
 
     try:
-        # 1) discover urls per brand
-        brand_to_urls: Dict[str, List[str]] = {}
-        for brand, url in BRAND_CATEGORY_URLS.items():
-            brand_to_urls[brand] = scrape_brand_urls(fetcher, brand, url)
+        # 1) collect product urls + category prices
+        brand_to_price_map: Dict[str, Dict[str, str]] = {}
+        for brand, cat_url in BRAND_CATEGORY_URLS.items():
+            brand_to_price_map[brand] = scrape_brand_urls_with_prices(fetcher, brand, cat_url)
 
-        # 2) scrape products
+        # 2) scrape product pages
         rows: List[Dict] = []
         seen = set()
 
-        for brand, urls in brand_to_urls.items():
-            for purl in urls:
+        for brand, price_map in brand_to_price_map.items():
+            for purl, cat_price in price_map.items():
                 if purl in seen:
                     continue
                 seen.add(purl)
 
                 logging.info(f"[{brand}] product: {purl}")
-                html = fetcher.fetch_html(purl, wait_selector="h1")
+                html = fetcher.fetch_html(purl)
                 if not html:
                     rows.append({
                         "ts": ts,
                         "brand": brand,
                         "product_url": purl,
                         "name": "",
-                        "price_raw": "",
+                        "price_raw": cat_price or "",
                         "in_stock": None,
                         "specs_json": "[]",
                         "description": "",
@@ -479,21 +528,14 @@ def run():
                     continue
 
                 try:
-                    soup = BeautifulSoup(html, "html.parser")
-
-                    # small accuracy+efficiency win:
-                    # skip unrelated products incorrectly listed under the brand category
-                    if not brand_matches_page(soup, brand):
+                    item = parse_product(html, brand, purl, cat_price)
+                    if item is None:
+                        # breadcrumb mismatch -> skip leakage
                         logging.info(f"[{brand}] skipped (breadcrumb mismatch): {purl}")
                         sleep_politely()
                         continue
 
-                    item = parse_product(html, brand, purl)
-                    rows.append({
-                        "ts": ts,
-                        **item,
-                        "scrape_error": "",
-                    })
+                    rows.append({"ts": ts, **item, "scrape_error": ""})
 
                 except Exception as ex:
                     logging.exception(f"Parse failed for {purl}: {ex}")
@@ -502,7 +544,7 @@ def run():
                         "brand": brand,
                         "product_url": purl,
                         "name": "",
-                        "price_raw": "",
+                        "price_raw": cat_price or "",
                         "in_stock": None,
                         "specs_json": "[]",
                         "description": "",
@@ -514,13 +556,10 @@ def run():
 
         logging.info(f"Collected rows: {len(rows)}")
 
-        # 3) load to BQ (truncate snapshot)
-        if rows:
-            client = get_bq_client()
-            inserted = bq_replace_rows(client, BQ_DATASET, BQ_TABLE, rows)
+        client = get_bq_client()
+        inserted = bq_write_truncate(client, BQ_DATASET, BQ_TABLE, rows)
+        if inserted:
             logging.info(f"WRITE_TRUNCATE loaded {inserted} rows into {client.project}.{BQ_DATASET}.{BQ_TABLE}")
-        else:
-            logging.warning("0 rows collected -> skipping WRITE_TRUNCATE to avoid wiping previous data.")
 
     finally:
         fetcher.close()
